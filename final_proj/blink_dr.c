@@ -15,51 +15,63 @@
 
 #include <stdbool.h>
 
-volatile int state = 0; // 0 = ON , 1 = OFF
-volatile uint8_t receivedValue = 0;
-volatile uint8_t checkBluetooth = 0; // 0 means we received 3, 1 means we received 4
+// Sets up the state machine
+// We have 00 = 10-5 under, 01 = 5-0 under, 10 = 0-5 over, 11 = 5-10 over
+volatile int MSB = 0;
+volatile int LSB = 0;
 
+// PIR IRQ used to trigger the traffic light
 void PORT6_IRQHandler(){
+    volatile unsigned int half_period=10000000;
+    volatile unsigned int countdown;
     uint32_t status = GPIO_getEnabledInterruptStatus(GPIO_PORT_P6);
     GPIO_clearInterruptFlag(GPIO_PORT_P6, status);
 
-    if(state == 0){
-        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
-        state = 1;
+    // Replace this logic with triggering the GREEN light for a bit and then set back to default RED
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
+    for (countdown=half_period;countdown>0;--countdown){
     }
-    else if(state == 1) {
-        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
-        state = 0;
-    }
+    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
 
     MAP_GPIO_enableInterrupt(GPIO_PORT_P6, GPIO_PIN7);
 }
 
-const eUSCI_UART_Config uartConfig =
-{
-    EUSCI_A_UART_CLOCKSOURCE_SMCLK,          // SMCLK Clock Source
-    78,                                     // BRDIV = 78
-    2,                                       // UCxBRF = 2
-    0,                                       // UCxBRS = 0
-    EUSCI_A_UART_NO_PARITY,                  // No Parity
-    EUSCI_A_UART_LSB_FIRST,                  // MSB First
-    EUSCI_A_UART_ONE_STOP_BIT,               // One stop bit
-    EUSCI_A_UART_MODE,                       // UART mode
-    EUSCI_A_UART_OVERSAMPLING_BAUDRATE_GENERATION  // Oversampling
-};
+// Proof of concept of changing each light based on speed (1 for fast 0 for slow)
+void PORT5_IRQHandler(){
+    volatile unsigned int half_period=2500000;
+    volatile unsigned int countdown;
+    uint32_t status = GPIO_getEnabledInterruptStatus(GPIO_PORT_P5);
+    GPIO_clearInterruptFlag(GPIO_PORT_P5, status);
 
-void EUSCIA2_IRQHandler(void)
-{
-    uint32_t status = MAP_UART_getEnabledInterruptStatus(EUSCI_A2_BASE);
+    if(LSB == 1) {
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
+        for (countdown=half_period;countdown>0;--countdown){
+        }
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN5);
+        for (countdown=half_period;countdown>0;--countdown){
+        }
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN5);
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN7);
+        for (countdown=half_period;countdown>0;--countdown){
+        }
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN7);
+    }
+    else if(LSB == 0){
+        half_period *= 2;
 
-    if(status & EUSCI_A_UART_RECEIVE_INTERRUPT_FLAG){
-        receivedValue = MAP_UART_receiveData(EUSCI_A2_BASE);
-        if (receivedValue == 3){
-            checkBluetooth = 0;
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
+        for (countdown=half_period;countdown>0;--countdown){
         }
-        else if (receivedValue == 4){
-            checkBluetooth = 1;
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN5);
+        for (countdown=half_period;countdown>0;--countdown){
         }
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN5);
+        GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN7);
+        for (countdown=half_period;countdown>0;--countdown){
+        }
+        GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN7);
     }
 }
 
@@ -73,33 +85,40 @@ int main(void)
 
     CS_setDCOCenteredFrequency(CS_DCO_FREQUENCY_24);
 
-    /* Selecting P3.2 and P3.3 in UART mode */
-    MAP_GPIO_setAsPeripheralModuleFunctionInputPin(GPIO_PORT_P3,
-    GPIO_PIN2 | GPIO_PIN3, GPIO_PRIMARY_MODULE_FUNCTION);
-
-    /* Configuring UART Module */
-    MAP_UART_initModule(EUSCI_A2_BASE, &uartConfig);
-
-    /* Enable UART module */
-    MAP_UART_enableModule(EUSCI_A2_BASE);
-    MAP_UART_enableInterrupt(EUSCI_A2_BASE, EUSCI_A_UART_RECEIVE_INTERRUPT);
-
-    // start with Receive Enabled
-    MAP_Interrupt_enableInterrupt(INT_EUSCIA2);
-
     /* Configuring the PIR sensor */
     MAP_Interrupt_disableSleepOnIsrExit();
     MAP_Interrupt_enableMaster();
+
     MAP_Interrupt_enableInterrupt(INT_PORT6);
     MAP_GPIO_enableInterrupt(GPIO_PORT_P6, GPIO_PIN7);
     MAP_GPIO_setAsInputPin(GPIO_PORT_P6, GPIO_PIN7);
 
-    /* Configuring P2.4 as output */
+    /* Configuring the GPIO to take interrupts from the bluetooth HIGH signals
+     * Triggered distance sensor --> speed read from bluetooth --> appropriate signal
+     * to board to adjust speed properly
+     */
+    // MIMICKING THRESHOLD IDEA OF THE BLUETOOTH BOARD
+    double speed = 2;
+    if(speed < 20) {
+        LSB = 0;
+    }
+    else if(speed >= 20) {
+        LSB = 1;
+    }
+
+    MAP_Interrupt_enableInterrupt(INT_PORT5);
+    MAP_GPIO_enableInterrupt(GPIO_PORT_P5, GPIO_PIN1);
+    MAP_GPIO_setAsInputPin(GPIO_PORT_P5, GPIO_PIN1);
+
+    // Configuring street light GPIOs
     MAP_GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN4);
     MAP_GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN5);
     MAP_GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN7);
 
-    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
+    // Default the street lights to OFF
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN5);
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN7);
 
     while (1)
     {
@@ -108,5 +127,3 @@ int main(void)
         //}
     }
 }
-
-
