@@ -25,15 +25,14 @@
 // Initialized to allow button use to enable certain alarms
 #define BUTTON_PORT5 P5
 #define BUTTON_BIT1 BIT1
-#define BUTTON_PORT3 P3
-#define BUTTON_BIT5  BIT5
 #define TEXTCOL GRAPHICS_COLOR_YELLOW
 #define BACKCOL GRAPHICS_COLOR_BLACK
-#define DOTCOL GRAPHICS_COLOR_LIGHT_GREEN
-#define DOTCOL_PRESSED GRAPHICS_COLOR_RED
-#define RADIUS 2
+#define RIGHTCOL GRAPHICS_COLOR_GREEN
+#define LEFTCOL GRAPHICS_COLOR_BLUE
 Graphics_Context g_sContext;    // graphics context for grlib
-uint16_t xscreen, yscreen;      // current screen location coordinates
+
+// States: 0 = Active PIR, 1 = Inactive PIR
+volatile unsigned int buttonState = 0;
 
 void init_button()
 {
@@ -43,12 +42,6 @@ void init_button()
     BUTTON_PORT5->IES |= BUTTON_BIT1;
     BUTTON_PORT5->IFG &= ~BUTTON_BIT1;
     BUTTON_PORT5->IE  |= BUTTON_BIT1;
-    // Set up the second button for interrupts
-    BUTTON_PORT3->OUT |= BUTTON_BIT5;
-    BUTTON_PORT3->REN |= BUTTON_BIT5;
-    BUTTON_PORT3->IES |= BUTTON_BIT5;
-    BUTTON_PORT3->IFG &= ~BUTTON_BIT5;
-    BUTTON_PORT3->IE  |= BUTTON_BIT5;
 }
 
 void mapports(){
@@ -83,45 +76,72 @@ void init_display(){
     Graphics_setForegroundColor(&g_sContext, TEXTCOL);
     Graphics_setBackgroundColor(&g_sContext, BACKCOL);
     GrContextFontSet(&g_sContext, &g_sFontFixed6x8);
+
     Graphics_clearDisplay(&g_sContext);
-    Graphics_drawString(&g_sContext,"J:",AUTO_STRING_LENGTH,0,116,OPAQUE_TEXT);
-    xscreen=0;
-    yscreen=0;  // just use origin, first write is a background
+    Graphics_drawString(&g_sContext,"aLaRm",AUTO_STRING_LENGTH,45,45,OPAQUE_TEXT);
+    Graphics_drawString(&g_sContext,"Safe!",AUTO_STRING_LENGTH,45,85,OPAQUE_TEXT);
 }
 
 // PIR IRQ
 void PORT6_IRQHandler(){
     volatile unsigned int half_period=1000000;
     volatile unsigned int countdown;
+
+    Graphics_clearDisplay(&g_sContext);
+    Graphics_setForegroundColor(&g_sContext, LEFTCOL);
+    Graphics_drawString(&g_sContext,"aLaRm",AUTO_STRING_LENGTH,45,45,OPAQUE_TEXT);
+    Graphics_drawString(&g_sContext,"Left!",AUTO_STRING_LENGTH,45,85,OPAQUE_TEXT);
+
     uint32_t status = GPIO_getEnabledInterruptStatus(GPIO_PORT_P6);
     GPIO_clearInterruptFlag(GPIO_PORT_P6, status);
 
-        TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
-        // Replace this logic with triggering the GREEN light for a bit and then set back to default RED
-        GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN6);
-        for (countdown=half_period;countdown>0;--countdown){
-        }
-        TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
-        GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN6);
+    TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
+    // Replace this logic with triggering the GREEN light for a bit and then set back to default RED
+    GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN6);
+    for (countdown=half_period;countdown>0;--countdown){
+    }
+    TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
+    GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN6);
 
     MAP_GPIO_enableInterrupt(GPIO_PORT_P6, GPIO_PIN7);
 }
 
+// Button IRQ to handle the toggling of the left PIR sensor function
+void PORT5_IRQHandler(){
+    if (BUTTON_PORT5->IFG & BUTTON_BIT1)
+    {
+        if(buttonState == 0){ // Turn OFF the PIR IRQ
+            BUTTON_PORT5->IFG &= ~BUTTON_BIT1;
+            MAP_GPIO_disableInterrupt(GPIO_PORT_P6, GPIO_PIN7);
+            buttonState = 1; // OFF
+        }
+        else if(buttonState == 1){
+            BUTTON_PORT5->IFG &= ~BUTTON_BIT1;
+            MAP_GPIO_enableInterrupt(GPIO_PORT_P6, GPIO_PIN7);
+            buttonState = 0; // ON
+        }
+    }
+}
+
 // Distance Sensor IRQ
 void PORT4_IRQHandler(){
-    volatile unsigned int half_period=250000;
+    volatile unsigned int half_period = 1000000;
     volatile unsigned int countdown;
-    uint32_t status = GPIO_getEnabledInterruptStatus(GPIO_PORT_P5);
-    GPIO_clearInterruptFlag(GPIO_PORT_P5, status);
 
-        // If motion is detected within range set motion detection
-        if(P4IN & GPIO_PIN4) {
-            TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
-            GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
-            for (countdown=half_period;countdown>0;--countdown){
-            }
-            GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
-        }
+    Graphics_clearDisplay(&g_sContext);
+    Graphics_setForegroundColor(&g_sContext, RIGHTCOL);
+    Graphics_drawString(&g_sContext,"aLaRm",AUTO_STRING_LENGTH,45,45,OPAQUE_TEXT);
+    Graphics_drawString(&g_sContext,"Right!",AUTO_STRING_LENGTH,45,85,OPAQUE_TEXT);
+
+    uint32_t status = GPIO_getEnabledInterruptStatus(GPIO_PORT_P5);
+    GPIO_clearInterruptFlag(GPIO_PORT_P4, status);
+
+    TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
+    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN4);
+    for (countdown=half_period;countdown>0;--countdown){
+    }
+    TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
+    GPIO_setOutputLowOnPin(GPIO_PORT_P2, GPIO_PIN4);
 }
 
 int main(void)
@@ -132,9 +152,12 @@ int main(void)
     mapports();
     init_timer();
     init_display();
+    init_button();
 
     MAP_Interrupt_disableSleepOnIsrExit();
     MAP_Interrupt_enableMaster();
+
+    TIMER_A0->CCTL[0]^=TIMER_A_CCTLN_OUTMOD_4;
 
     /* Configuring the PIR sensor interrupt */
     MAP_Interrupt_enableInterrupt(INT_PORT6);
@@ -145,6 +168,11 @@ int main(void)
     MAP_Interrupt_enableInterrupt(INT_PORT4);
     MAP_GPIO_enableInterrupt(GPIO_PORT_P4, GPIO_PIN4);
     MAP_GPIO_setAsInputPin(GPIO_PORT_P4, GPIO_PIN4);
+
+    /* Allowing the button interrupt to occur */
+    MAP_Interrupt_enableInterrupt(INT_PORT5);
+    MAP_GPIO_enableInterrupt(GPIO_PORT_P5, GPIO_PIN1);
+    MAP_GPIO_setAsInputPin(GPIO_PORT_P5, GPIO_PIN1);
 
     MAP_GPIO_setAsOutputPin(GPIO_PORT_P5, GPIO_PIN6);
     MAP_GPIO_setAsOutputPin(GPIO_PORT_P2, GPIO_PIN4);
